@@ -1,8 +1,42 @@
 (function () {
     'use strict';
 
-    if (window.__LAMPA_UA_VOICE__) return;
-    window.__LAMPA_UA_VOICE__ = true;
+    var MANIFEST = {
+        type: 'other',
+        version: '1.0.1',
+        name: 'UA Voice 🇺🇦',
+        description: 'Українські аудіодоріжки для Lampa',
+        component: 'ua_voice'
+    };
+
+    function registerManifest() {
+        try {
+            if (!window.Lampa) return false;
+            if (!Lampa.Manifest) Lampa.Manifest = {};
+
+            if (Array.isArray(Lampa.Manifest.plugins)) {
+                var exists = Lampa.Manifest.plugins.some(function (item) {
+                    return item && item.component === MANIFEST.component;
+                });
+                if (!exists) Lampa.Manifest.plugins.push(MANIFEST);
+            } else if (Lampa.Manifest.plugins && typeof Lampa.Manifest.plugins === 'object') {
+                Lampa.Manifest.plugins[MANIFEST.component] = MANIFEST;
+            } else {
+                var plugins = {};
+                plugins[MANIFEST.component] = MANIFEST;
+                Lampa.Manifest.plugins = plugins;
+            }
+
+            return true;
+        } catch (e) {
+            try { console.log('[UA Voice] manifest error', e); } catch (_) {}
+            return false;
+        }
+    }
+
+
+    if (window.__LAMPA_UA_VOICE_LOADING__) return;
+    window.__LAMPA_UA_VOICE_LOADING__ = true;
 
     var PLUGIN = 'ua_voice';
     var STORE_ENABLED = 'ua_voice_enabled';
@@ -379,18 +413,45 @@
         });
     }
 
+    function startPlugin() {
+        if (window.__LAMPA_UA_VOICE_STARTED__) return;
+        if (!window.Lampa) return;
+
+        registerManifest();
+
+        try { addSettings(); } catch (e) { log('settings init error', e); }
+        try { addPlayerButton(); } catch (e) { log('player init error', e); }
+        try { keyboardShortcut(); } catch (e) { log('keyboard init error', e); }
+
+        window.__LAMPA_UA_VOICE_STARTED__ = true;
+        window.__LAMPA_UA_VOICE_LOADING__ = false;
+
+        log('v1.0.1 loaded');
+    }
+
     function init() {
-        if (!window.Lampa) {
-            setTimeout(init, 500);
-            return;
+        var tries = 0;
+
+        function ready() {
+            tries++;
+
+            if (window.Lampa &&
+                Lampa.Storage &&
+                Lampa.SettingsApi &&
+                Lampa.Manifest) {
+                startPlugin();
+                return;
+            }
+
+            if (tries < 120) {
+                setTimeout(ready, 250);
+            } else {
+                window.__LAMPA_UA_VOICE_LOADING__ = false;
+                log('Lampa API was not ready');
+            }
         }
 
-        addSettings();
-        addPlayerButton();
-        keyboardShortcut();
-
-        log('loaded');
-        notify('UA Voice 🇺🇦 підключено');
+        ready();
     }
 
     init();
