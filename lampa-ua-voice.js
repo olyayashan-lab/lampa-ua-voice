@@ -1,465 +1,438 @@
 (function () {
     'use strict';
 
-    var MANIFEST = {
-        type: 'other',
-        version: '1.0.1',
-        name: 'UA Voice 🇺🇦',
-        description: 'Українські аудіодоріжки для Lampa',
-        component: 'ua_voice'
-    };
-
-    function registerManifest() {
-        try {
-            if (!window.Lampa) return false;
-            if (!Lampa.Manifest) Lampa.Manifest = {};
-
-            if (Array.isArray(Lampa.Manifest.plugins)) {
-                var exists = Lampa.Manifest.plugins.some(function (item) {
-                    return item && item.component === MANIFEST.component;
-                });
-                if (!exists) Lampa.Manifest.plugins.push(MANIFEST);
-            } else if (Lampa.Manifest.plugins && typeof Lampa.Manifest.plugins === 'object') {
-                Lampa.Manifest.plugins[MANIFEST.component] = MANIFEST;
-            } else {
-                var plugins = {};
-                plugins[MANIFEST.component] = MANIFEST;
-                Lampa.Manifest.plugins = plugins;
-            }
-
-            return true;
-        } catch (e) {
-            try { console.log('[UA Voice] manifest error', e); } catch (_) {}
-            return false;
-        }
-    }
-
-
-    if (window.__LAMPA_UA_VOICE_LOADING__) return;
-    window.__LAMPA_UA_VOICE_LOADING__ = true;
+    if (window.__LAMPA_UA_VOICE_V2__) return;
+    window.__LAMPA_UA_VOICE_V2__ = true;
 
     var PLUGIN = 'ua_voice';
-    var STORE_ENABLED = 'ua_voice_enabled';
-    var STORE_AUTO = 'ua_voice_auto_select';
-    var STORE_LAST = 'ua_voice_last_name';
+    var VERSION = '2.0.0';
 
-    var UA_WORDS = [
-        'uk', 'ukr', 'ukrainian', 'україн', 'украин',
-        'ua', 'укр', 'україна', 'украина',
-        'дубляж', 'дубльований', 'дубльована',
-        'багатоголос', 'двоголос', 'одноголос'
-    ];
+    var STORE = {
+        enabled: 'ua_voice_enabled',
+        api: 'ua_voice_api',
+        auto: 'ua_voice_auto_select',
+        last: 'ua_voice_last_name'
+    };
 
-    var STUDIO_HINTS = [
-        'le doyen', 'ledoyen',
-        'postmodern', 'post modern',
-        'так треба', 'так треба продакшн',
-        '1+1', 'ictv', 'новий канал', 'стб',
-        'megogo', 'sweet.tv', 'sweet tv',
-        'netflix', 'disney', 'uaflix'
-    ];
+    var MANIFEST = {
+        type: 'other',
+        version: VERSION,
+        name: 'UA Voice 🇺🇦',
+        description: 'Українські озвучки для Lampa',
+        component: PLUGIN
+    };
 
     function log() {
         try {
-            var args = Array.prototype.slice.call(arguments);
-            args.unshift('[UA Voice]');
-            console.log.apply(console, args);
+            var a = Array.prototype.slice.call(arguments);
+            a.unshift('[UA Voice]');
+            console.log.apply(console, a);
         } catch (e) {}
     }
 
-    function storageGet(key, def) {
+    function noty(text) {
         try {
-            if (window.Lampa && Lampa.Storage && typeof Lampa.Storage.get === 'function') {
-                return Lampa.Storage.get(key, def);
-            }
+            if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(text);
+            else log(text);
+        } catch (e) { log(text); }
+    }
+
+    function get(key, def) {
+        try {
+            if (Lampa.Storage && Lampa.Storage.get) return Lampa.Storage.get(key, def);
         } catch (e) {}
-        try {
-            var val = localStorage.getItem(key);
-            return val === null ? def : JSON.parse(val);
-        } catch (e2) {
-            return def;
-        }
+        return def;
     }
 
-    function storageSet(key, val) {
+    function set(key, val) {
         try {
-            if (window.Lampa && Lampa.Storage && typeof Lampa.Storage.set === 'function') {
-                Lampa.Storage.set(key, val);
-                return;
-            }
+            if (Lampa.Storage && Lampa.Storage.set) Lampa.Storage.set(key, val);
         } catch (e) {}
+    }
+
+    function registerManifest() {
         try {
-            localStorage.setItem(key, JSON.stringify(val));
-        } catch (e2) {}
-    }
+            if (!Lampa.Manifest) Lampa.Manifest = {};
 
-    function notify(text) {
-        try {
-            if (window.Lampa && Lampa.Noty && typeof Lampa.Noty.show === 'function') {
-                Lampa.Noty.show(text);
-                return;
-            }
-        } catch (e) {}
-        log(text);
-    }
-
-    function normalizeText(track) {
-        var values = [];
-        if (!track) return '';
-
-        ['name', 'label', 'language', 'lang', 'title', 'groupId', 'id'].forEach(function (k) {
-            if (track[k] !== undefined && track[k] !== null) values.push(String(track[k]));
-        });
-
-        if (track.attrs) {
-            ['NAME', 'LANGUAGE', 'GROUP-ID'].forEach(function (k) {
-                if (track.attrs[k]) values.push(String(track.attrs[k]));
-            });
-        }
-
-        return values.join(' ').toLowerCase();
-    }
-
-    function isUkrainian(track) {
-        var txt = normalizeText(track);
-        if (!txt) return false;
-
-        if (/\b(uk|ukr|ua)\b/i.test(txt)) return true;
-
-        return UA_WORDS.some(function (word) {
-            return txt.indexOf(word) !== -1;
-        });
-    }
-
-    function displayName(track, index) {
-        var name =
-            track && (track.name || track.label || track.title ||
-            (track.attrs && track.attrs.NAME)) || ('Українська доріжка ' + (index + 1));
-
-        var txt = String(name);
-        var low = normalizeText(track);
-
-        STUDIO_HINTS.forEach(function (studio) {
-            if (low.indexOf(studio) !== -1 && txt.toLowerCase().indexOf(studio) === -1) {
-                txt += ' · ' + studio;
-            }
-        });
-
-        return txt;
-    }
-
-    function uniqueTracks(tracks) {
-        var seen = {};
-        return (tracks || []).filter(function (track, index) {
-            var key = normalizeText(track) || ('idx:' + index);
-            if (seen[key]) return false;
-            seen[key] = true;
-            return true;
-        });
-    }
-
-    function getHlsObjects() {
-        var found = [];
-
-        function add(obj) {
-            if (!obj || found.indexOf(obj) !== -1) return;
-            if (Array.isArray(obj.audioTracks) && obj.audioTracks.length) found.push(obj);
-        }
-
-        try {
-            if (window.Lampa && Lampa.Player) {
-                add(Lampa.Player.hls);
-                add(Lampa.Player._hls);
-                add(Lampa.Player.player && Lampa.Player.player.hls);
-            }
-        } catch (e) {}
-
-        try {
-            Object.keys(window).forEach(function (key) {
-                var obj;
-                try { obj = window[key]; } catch (e) { return; }
-                if (!obj || typeof obj !== 'object') return;
-                if (obj.audioTracks && Array.isArray(obj.audioTracks) &&
-                    typeof obj.audioTrack !== 'undefined') {
-                    add(obj);
-                }
-            });
-        } catch (e2) {}
-
-        return found;
-    }
-
-    function getNativeTracks() {
-        var result = [];
-        try {
-            var video = document.querySelector('video');
-            if (!video || !video.audioTracks) return result;
-
-            for (var i = 0; i < video.audioTracks.length; i++) {
-                var t = video.audioTracks[i];
-                result.push({
-                    __native: true,
-                    __index: i,
-                    id: t.id,
-                    language: t.language,
-                    label: t.label,
-                    enabled: t.enabled,
-                    _ref: t
+            if (Array.isArray(Lampa.Manifest.plugins)) {
+                var exists = Lampa.Manifest.plugins.some(function (p) {
+                    return p && p.component === PLUGIN;
                 });
-            }
-        } catch (e) {}
-        return result;
-    }
-
-    function collectTracks() {
-        var result = [];
-
-        getHlsObjects().forEach(function (hls) {
-            hls.audioTracks.forEach(function (track, i) {
-                var copy = {};
-                try {
-                    Object.keys(track).forEach(function (k) { copy[k] = track[k]; });
-                } catch (e) {}
-                copy.__hls = hls;
-                copy.__index = i;
-                result.push(copy);
-            });
-        });
-
-        result = result.concat(getNativeTracks());
-        return uniqueTracks(result);
-    }
-
-    function chooseTrack(track) {
-        if (!track) return false;
-
-        try {
-            if (track.__hls) {
-                track.__hls.audioTrack = track.__index;
-                storageSet(STORE_LAST, displayName(track, track.__index));
-                notify('🇺🇦 Обрано: ' + displayName(track, track.__index));
-                return true;
+                if (!exists) Lampa.Manifest.plugins.push(MANIFEST);
+            } else if (Lampa.Manifest.plugins && typeof Lampa.Manifest.plugins === 'object') {
+                Lampa.Manifest.plugins[PLUGIN] = MANIFEST;
+            } else {
+                Lampa.Manifest.plugins = {};
+                Lampa.Manifest.plugins[PLUGIN] = MANIFEST;
             }
         } catch (e) {
-            log('HLS select error', e);
+            log('manifest error', e);
         }
+    }
 
+    function normalize(text) {
+        return String(text || '').trim().toLowerCase();
+    }
+
+    function isUa(item) {
+        var s = normalize([
+            item && item.language,
+            item && item.lang,
+            item && item.audio,
+            item && item.voice,
+            item && item.translation,
+            item && item.title,
+            item && item.name,
+            item && item.label
+        ].filter(Boolean).join(' '));
+
+        return (
+            /\b(uk|ukr|ua)\b/i.test(s) ||
+            s.indexOf('україн') !== -1 ||
+            s.indexOf('украин') !== -1 ||
+            s.indexOf('укр') !== -1 ||
+            s.indexOf('дубляж') !== -1 ||
+            s.indexOf('багатоголос') !== -1 ||
+            s.indexOf('двоголос') !== -1 ||
+            s.indexOf('одноголос') !== -1
+        );
+    }
+
+    function movieIds(movie) {
+        movie = movie || {};
+
+        return {
+            tmdb: movie.id || movie.tmdb_id || '',
+            imdb: movie.imdb_id || '',
+            kp: movie.kp_id || movie.kinopoisk_id || '',
+            title: movie.title || movie.name || '',
+            original_title: movie.original_title || movie.original_name || '',
+            year: movie.release_date ? String(movie.release_date).slice(0, 4) :
+                  movie.first_air_date ? String(movie.first_air_date).slice(0, 4) : '',
+            type: movie.number_of_seasons || movie.first_air_date ? 'tv' : 'movie'
+        };
+    }
+
+    function buildApiUrl(movie) {
+        var base = String(get(STORE.api, '') || '').trim();
+        if (!base) return '';
+
+        var ids = movieIds(movie);
+        var sep = base.indexOf('?') === -1 ? '?' : '&';
+
+        return base + sep +
+            'tmdb=' + encodeURIComponent(ids.tmdb) +
+            '&imdb=' + encodeURIComponent(ids.imdb) +
+            '&kp=' + encodeURIComponent(ids.kp) +
+            '&type=' + encodeURIComponent(ids.type) +
+            '&title=' + encodeURIComponent(ids.title) +
+            '&original_title=' + encodeURIComponent(ids.original_title) +
+            '&year=' + encodeURIComponent(ids.year);
+    }
+
+    function requestJson(url, onSuccess, onError) {
         try {
-            if (track.__native && track._ref) {
-                var all = getNativeTracks();
-                all.forEach(function (x) {
-                    try { x._ref.enabled = x.__index === track.__index; } catch (e) {}
+            if (Lampa.Network) {
+                var network = new Lampa.Reguest();
+                network.silent(url, function (data) {
+                    onSuccess(data);
+                }, function (err) {
+                    onError(err);
                 });
-                storageSet(STORE_LAST, displayName(track, track.__index));
-                notify('🇺🇦 Обрано: ' + displayName(track, track.__index));
-                return true;
+                return;
             }
-        } catch (e2) {
-            log('Native select error', e2);
-        }
+        } catch (e) {}
 
-        return false;
+        fetch(url)
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(onSuccess)
+            .catch(onError);
     }
 
-    function ukrainianTracks() {
-        return collectTracks().filter(isUkrainian);
+    function extractItems(data) {
+        if (!data) return [];
+
+        var items = [];
+
+        if (Array.isArray(data)) items = data;
+        else if (Array.isArray(data.results)) items = data.results;
+        else if (Array.isArray(data.items)) items = data.items;
+        else if (Array.isArray(data.sources)) items = data.sources;
+        else if (Array.isArray(data.voices)) items = data.voices;
+        else if (data.data && Array.isArray(data.data)) items = data.data;
+        else if (data.data && Array.isArray(data.data.results)) items = data.data.results;
+
+        return items.filter(function (x) {
+            return x && (x.url || x.stream || x.file || x.link);
+        });
     }
 
-    function autoSelect() {
-        if (storageGet(STORE_ENABLED, true) !== true) return;
-        if (storageGet(STORE_AUTO, true) !== true) return;
-
-        var tracks = ukrainianTracks();
-        if (!tracks.length) return;
-
-        var last = String(storageGet(STORE_LAST, '') || '').toLowerCase();
-        var selected = null;
-
-        if (last) {
-            selected = tracks.find(function (t, i) {
-                return displayName(t, i).toLowerCase() === last;
-            });
-        }
-
-        chooseTrack(selected || tracks[0]);
+    function sourceUrl(item) {
+        return item.url || item.stream || item.file || item.link || '';
     }
 
-    function openPicker() {
-        var tracks = ukrainianTracks();
+    function sourceName(item, index) {
+        var voice = item.voice || item.translation || item.audio || item.label || item.name || item.title;
+        var studio = item.studio || item.provider || item.source || '';
+        var quality = item.quality || '';
 
-        if (!tracks.length) {
-            notify('🇺🇦 Українських аудіодоріжок у цьому потоці не знайдено');
+        var parts = [];
+        if (voice) parts.push(String(voice));
+        if (studio && normalize(studio) !== normalize(voice)) parts.push(String(studio));
+        if (quality) parts.push(String(quality));
+
+        return parts.length ? parts.join(' · ') : ('Українська озвучка ' + (index + 1));
+    }
+
+    function playSource(item, movie) {
+        var url = sourceUrl(item);
+        if (!url) {
+            noty('Не вдалося отримати посилання на відео');
             return;
         }
 
-        var items = tracks.map(function (track, index) {
+        set(STORE.last, sourceName(item, 0));
+
+        var title = (movie && (movie.title || movie.name)) || 'Відео';
+
+        try {
+            if (Lampa.Player && Lampa.Player.play) {
+                Lampa.Player.play({
+                    url: url,
+                    title: title,
+                    movie: movie,
+                    quality: item.quality || '',
+                    subtitles: item.subtitles || []
+                });
+
+                if (Lampa.Player.playlist) {
+                    Lampa.Player.playlist([{
+                        url: url,
+                        title: title,
+                        movie: movie
+                    }]);
+                }
+
+                return;
+            }
+        } catch (e) {
+            log('Player.play error', e);
+        }
+
+        noty('Плеєр Lampa не прийняв це джерело');
+    }
+
+    function showSources(items, movie) {
+        var ua = items.filter(isUa);
+
+        if (!ua.length) {
+            noty('🇺🇦 Українських озвучок для цього відео не знайдено');
+            return;
+        }
+
+        var list = ua.map(function (item, i) {
             return {
-                title: '🇺🇦 ' + displayName(track, index),
-                subtitle: track.language || track.lang || '',
-                track: track
+                title: '🇺🇦 ' + sourceName(item, i),
+                subtitle: [item.language || item.lang || '', item.quality || '']
+                    .filter(Boolean).join(' · '),
+                source: item
             };
         });
 
         try {
-            if (window.Lampa && Lampa.Select && typeof Lampa.Select.show === 'function') {
+            if (Lampa.Select && Lampa.Select.show) {
                 Lampa.Select.show({
-                    title: 'Українська озвучка',
-                    items: items,
-                    onSelect: function (item) {
-                        chooseTrack(item.track);
+                    title: '🇺🇦 Українська озвучка',
+                    items: list,
+                    onSelect: function (selected) {
+                        playSource(selected.source, movie);
                     },
                     onBack: function () {
-                        if (Lampa.Controller && Lampa.Controller.toggle) {
-                            Lampa.Controller.toggle('player');
-                        }
+                        try { Lampa.Controller.toggle('content'); } catch (e) {}
                     }
                 });
                 return;
             }
         } catch (e) {
-            log('Select API unavailable', e);
+            log('Select error', e);
         }
 
-        chooseTrack(tracks[0]);
+        playSource(ua[0], movie);
+    }
+
+    function loadSources(movie) {
+        if (get(STORE.enabled, true) === false) return;
+
+        var api = buildApiUrl(movie);
+
+        if (!api) {
+            noty('Вкажіть API джерел у Налаштування → UA Voice 🇺🇦');
+            return;
+        }
+
+        noty('Пошук українських озвучок…');
+
+        requestJson(api, function (data) {
+            var items = extractItems(data);
+            showSources(items, movie);
+        }, function (err) {
+            log('API error', err);
+            noty('Не вдалося отримати список озвучок');
+        });
+    }
+
+    function buttonHtml() {
+        return $(
+            '<div class="full-start__button selector ua-voice--button">' +
+                '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">' +
+                    '<path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.06A4.5 4.5 0 0 0 16.5 12zm0-8.66v2.07A8 8 0 0 1 20 12a8 8 0 0 1-3.5 6.59v2.07A10 10 0 0 0 22 12a10 10 0 0 0-5.5-8.66z"/>' +
+                '</svg>' +
+                '<span>🇺🇦 Українська</span>' +
+            '</div>'
+        );
+    }
+
+    function addButton(movie, root) {
+        try {
+            if (!root || !root.length) return;
+            if (root.find('.ua-voice--button').length) return;
+
+            var buttons = root.find('.full-start__buttons');
+            if (!buttons.length) return;
+
+            var btn = buttonHtml();
+
+            btn.on('hover:enter click', function () {
+                loadSources(movie);
+            });
+
+            buttons.append(btn);
+        } catch (e) {
+            log('button error', e);
+        }
+    }
+
+    function observeFull() {
+        try {
+            Lampa.Listener.follow('full', function (e) {
+                if (e.type !== 'complite') return;
+
+                var movie = e.data && e.data.movie ? e.data.movie : e.data;
+                var root = e.object && e.object.activity && e.object.activity.render
+                    ? e.object.activity.render()
+                    : $('.full-start');
+
+                setTimeout(function () {
+                    addButton(movie, root);
+                }, 50);
+            });
+        } catch (e) {
+            log('full listener error', e);
+        }
+
+        try {
+            Lampa.Listener.follow('activity', function (e) {
+                if (e.type !== 'start') return;
+                if (e.component !== 'full' && e.component !== 'showy') return;
+
+                setTimeout(function () {
+                    var movie = e.object && (e.object.card || e.object.movie);
+                    var root = e.object && e.object.activity && e.object.activity.render
+                        ? e.object.activity.render()
+                        : $('.full-start');
+                    addButton(movie, root);
+                }, 250);
+            });
+        } catch (e) {}
     }
 
     function addSettings() {
         try {
-            if (!window.Lampa || !Lampa.SettingsApi || !Lampa.SettingsApi.addParam) return;
+            if (!Lampa.SettingsApi) return;
 
             try {
                 Lampa.SettingsApi.addComponent({
                     component: PLUGIN,
                     name: 'UA Voice 🇺🇦',
-                    icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18Zm0 2a7 7 0 0 1 6.93 6H5.07A7 7 0 0 1 12 5Zm0 14a7 7 0 0 1-6.93-6h13.86A7 7 0 0 1 12 19Z"/></svg>'
+                    icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.06A4.5 4.5 0 0 0 16.5 12z"/></svg>'
                 });
             } catch (e) {}
 
             Lampa.SettingsApi.addParam({
                 component: PLUGIN,
                 param: {
-                    name: STORE_ENABLED,
+                    name: STORE.enabled,
                     type: 'trigger',
                     default: true
                 },
                 field: {
-                    name: 'Лише українські доріжки',
-                    description: 'Плагін шукає українську аудіодоріжку у поточному відеопотоці'
+                    name: 'Увімкнути UA Voice',
+                    description: 'Показувати кнопку українських озвучок у картці фільму'
                 }
             });
 
             Lampa.SettingsApi.addParam({
                 component: PLUGIN,
                 param: {
-                    name: STORE_AUTO,
-                    type: 'trigger',
-                    default: true
+                    name: STORE.api,
+                    type: 'input',
+                    default: ''
                 },
                 field: {
-                    name: 'Автовибір української',
-                    description: 'Автоматично перемикатися на українську озвучку, якщо вона є'
+                    name: 'API джерел',
+                    description: 'HTTPS-адреса твого легального або власного API українських відеоджерел'
                 }
             });
-
-            Lampa.SettingsApi.addParam({
-                component: PLUGIN,
-                param: {
-                    name: 'ua_voice_pick',
-                    type: 'button'
-                },
-                field: {
-                    name: 'Обрати українську озвучку',
-                    description: 'Показати всі знайдені українські аудіодоріжки'
-                },
-                onChange: function () {
-                    openPicker();
-                }
-            });
-
         } catch (e) {
-            log('Settings error', e);
+            log('settings error', e);
         }
-    }
-
-    function addPlayerButton() {
-        try {
-            if (!window.Lampa || !Lampa.Player || !Lampa.Player.listener) return;
-
-            Lampa.Player.listener.follow('create', function () {
-                var tries = 0;
-                var timer = setInterval(function () {
-                    tries++;
-                    var tracks = ukrainianTracks();
-
-                    if (tracks.length && storageGet(STORE_AUTO, true) === true) {
-                        clearInterval(timer);
-                        autoSelect();
-                    }
-
-                    if (tries >= 15) clearInterval(timer);
-                }, 800);
-            });
-        } catch (e) {
-            log('Player listener error', e);
-        }
-    }
-
-    function keyboardShortcut() {
-        document.addEventListener('keydown', function (e) {
-            if (!e) return;
-            if (e.altKey && (e.key === 'u' || e.key === 'U' || e.key === 'г' || e.key === 'Г')) {
-                openPicker();
-            }
-        });
-    }
-
-    function startPlugin() {
-        if (window.__LAMPA_UA_VOICE_STARTED__) return;
-        if (!window.Lampa) return;
-
-        registerManifest();
-
-        try { addSettings(); } catch (e) { log('settings init error', e); }
-        try { addPlayerButton(); } catch (e) { log('player init error', e); }
-        try { keyboardShortcut(); } catch (e) { log('keyboard init error', e); }
-
-        window.__LAMPA_UA_VOICE_STARTED__ = true;
-        window.__LAMPA_UA_VOICE_LOADING__ = false;
-
-        log('v1.0.1 loaded');
     }
 
     function init() {
-        var tries = 0;
+        registerManifest();
+        addSettings();
+        observeFull();
 
-        function ready() {
-            tries++;
-
-            if (window.Lampa &&
-                Lampa.Storage &&
-                Lampa.SettingsApi &&
-                Lampa.Manifest) {
-                startPlugin();
-                return;
-            }
-
-            if (tries < 120) {
-                setTimeout(ready, 250);
-            } else {
-                window.__LAMPA_UA_VOICE_LOADING__ = false;
-                log('Lampa API was not ready');
-            }
-        }
-
-        ready();
+        log('v' + VERSION + ' loaded');
     }
 
-    init();
+    function wait() {
+        if (window.appready && window.Lampa) {
+            init();
+            return;
+        }
+
+        if (window.Lampa && Lampa.Listener) {
+            var done = false;
+
+            Lampa.Listener.follow('app', function (e) {
+                if (!done && e.type === 'ready') {
+                    done = true;
+                    init();
+                }
+            });
+
+            setTimeout(function () {
+                if (!done && window.Lampa && Lampa.SettingsApi) {
+                    done = true;
+                    init();
+                }
+            }, 1500);
+
+            return;
+        }
+
+        setTimeout(wait, 300);
+    }
+
+    wait();
 
     window.LampaUAVoice = {
-        open: openPicker,
-        tracks: ukrainianTracks,
-        allTracks: collectTracks,
-        auto: autoSelect
+        version: VERSION,
+        open: loadSources,
+        isUa: isUa
     };
 })();
