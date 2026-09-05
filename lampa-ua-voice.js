@@ -1,40 +1,34 @@
 (function () {
     'use strict';
 
-    if (window.__LAMPA_UA_VOICE_V2__) return;
-    window.__LAMPA_UA_VOICE_V2__ = true;
+    if (window.__LAMPA_UA_VOICE_201__) return;
+    window.__LAMPA_UA_VOICE_201__ = true;
 
     var PLUGIN = 'ua_voice';
-    var VERSION = '2.0.0';
+    var VERSION = '2.0.1';
 
     var STORE = {
         enabled: 'ua_voice_enabled',
-        api: 'ua_voice_api',
-        auto: 'ua_voice_auto_select',
-        last: 'ua_voice_last_name'
+        api: 'ua_voice_api'
     };
 
-    var MANIFEST = {
-        type: 'other',
-        version: VERSION,
-        name: 'UA Voice 🇺🇦',
-        description: 'Українські озвучки для Lampa',
-        component: PLUGIN
-    };
+    var currentMovie = null;
+    var observer = null;
+    var injectTimer = null;
 
     function log() {
         try {
-            var a = Array.prototype.slice.call(arguments);
-            a.unshift('[UA Voice]');
-            console.log.apply(console, a);
+            var args = Array.prototype.slice.call(arguments);
+            args.unshift('[UA Voice]');
+            console.log.apply(console, args);
         } catch (e) {}
     }
 
     function noty(text) {
         try {
-            if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(text);
-            else log(text);
-        } catch (e) { log(text); }
+            if (window.Lampa && Lampa.Noty && Lampa.Noty.show) return Lampa.Noty.show(text);
+        } catch (e) {}
+        log(text);
     }
 
     function get(key, def) {
@@ -44,30 +38,158 @@
         return def;
     }
 
-    function set(key, val) {
-        try {
-            if (Lampa.Storage && Lampa.Storage.set) Lampa.Storage.set(key, val);
-        } catch (e) {}
-    }
-
     function registerManifest() {
         try {
             if (!Lampa.Manifest) Lampa.Manifest = {};
+
+            var manifest = {
+                type: 'other',
+                version: VERSION,
+                name: 'UA Voice 🇺🇦',
+                description: 'Українські озвучки для Lampa/CUB',
+                component: PLUGIN
+            };
 
             if (Array.isArray(Lampa.Manifest.plugins)) {
                 var exists = Lampa.Manifest.plugins.some(function (p) {
                     return p && p.component === PLUGIN;
                 });
-                if (!exists) Lampa.Manifest.plugins.push(MANIFEST);
-            } else if (Lampa.Manifest.plugins && typeof Lampa.Manifest.plugins === 'object') {
-                Lampa.Manifest.plugins[PLUGIN] = MANIFEST;
+                if (!exists) Lampa.Manifest.plugins.push(manifest);
             } else {
-                Lampa.Manifest.plugins = {};
-                Lampa.Manifest.plugins[PLUGIN] = MANIFEST;
+                if (!Lampa.Manifest.plugins || typeof Lampa.Manifest.plugins !== 'object') {
+                    Lampa.Manifest.plugins = {};
+                }
+                Lampa.Manifest.plugins[PLUGIN] = manifest;
             }
         } catch (e) {
-            log('manifest error', e);
+            log('manifest', e);
         }
+    }
+
+    function addStyle() {
+        if (document.getElementById('ua-voice-style')) return;
+
+        var style = document.createElement('style');
+        style.id = 'ua-voice-style';
+        style.textContent = [
+            '.ua-voice--button{display:flex!important;align-items:center;justify-content:center;gap:.45em;}',
+            '.ua-voice--button svg{width:1.25em;height:1.25em;flex:0 0 auto;}',
+            '.ua-voice--fallback{margin-left:.5em;}',
+            '.ua-voice--floating{position:fixed;left:4.2%;bottom:8%;z-index:9999;',
+            'background:rgba(25,25,25,.88);color:#fff;border-radius:.6em;',
+            'padding:.7em 1em;font-size:1.05em;display:flex;align-items:center;gap:.45em;}',
+            '.ua-voice--floating.focus,.ua-voice--floating.selector:focus{outline:3px solid #fff;}'
+        ].join('');
+        document.head.appendChild(style);
+    }
+
+    function buildButton(className) {
+        var el = document.createElement('div');
+        el.className = (className || '') + ' selector ua-voice--button';
+        el.setAttribute('data-ua-voice', '1');
+        el.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+            '<path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.06A4.5 4.5 0 0 0 16.5 12zm0-8.66v2.07A8 8 0 0 1 20 12a8 8 0 0 1-3.5 6.59v2.07A10 10 0 0 0 22 12a10 10 0 0 0-5.5-8.66z"/>' +
+            '</svg><span>🇺🇦 Українська</span>';
+
+        function action(e) {
+            try { if (e) e.stopPropagation(); } catch (_) {}
+            openUa(currentMovie);
+        }
+
+        el.addEventListener('click', action);
+        el.addEventListener('hover:enter', action);
+        return el;
+    }
+
+    function looksLikeFullCard() {
+        var text = (document.body && document.body.innerText || '').toLowerCase();
+
+        if (document.querySelector(
+            '.full-start,.full-start-new,.full-card,.full__body,.full-screen,.full-page,.full'
+        )) return true;
+
+        // CUB fallback: visible movie card usually has source / trailer area
+        return (
+            text.indexOf('джерело') !== -1 ||
+            text.indexOf('трейлер') !== -1 ||
+            text.indexOf('детально') !== -1
+        );
+    }
+
+    function findTarget() {
+        var selectors = [
+            '.full-start__buttons',
+            '.full-start-new__buttons',
+            '.full-start__actions',
+            '.full__buttons',
+            '.full-buttons',
+            '.full-actions',
+            '.full-card__buttons',
+            '.full-card__actions',
+            '.card-actions',
+            '.movie-actions',
+            '.buttons--container'
+        ];
+
+        for (var i = 0; i < selectors.length; i++) {
+            var el = document.querySelector(selectors[i]);
+            if (el && el.offsetParent !== null) return { el: el, mode: 'standard' };
+        }
+
+        // Find an existing horizontal row of selector buttons near the main movie card
+        var candidates = Array.prototype.slice.call(document.querySelectorAll(
+            '.full-start .selector, .full .selector, .full-card .selector, [class*="full"] .selector'
+        )).filter(function (x) {
+            return x.offsetParent !== null && !x.hasAttribute('data-ua-voice');
+        });
+
+        if (candidates.length) {
+            var parentCounts = [];
+            candidates.forEach(function (x) {
+                if (!x.parentElement) return;
+                var found = parentCounts.find(function (p) { return p.el === x.parentElement; });
+                if (found) found.count++;
+                else parentCounts.push({el:x.parentElement,count:1});
+            });
+
+            parentCounts.sort(function (a,b) { return b.count-a.count; });
+            if (parentCounts[0] && parentCounts[0].count >= 2) {
+                return { el: parentCounts[0].el, mode: 'row' };
+            }
+        }
+
+        return null;
+    }
+
+    function removeFloatingIfNeeded() {
+        var f = document.querySelector('.ua-voice--floating');
+        if (f) f.remove();
+    }
+
+    function inject() {
+        if (get(STORE.enabled, true) === false) return;
+        if (!looksLikeFullCard()) {
+            removeFloatingIfNeeded();
+            return;
+        }
+
+        if (document.querySelector('[data-ua-voice="1"]')) return;
+
+        var target = findTarget();
+
+        if (target) {
+            var btn = buildButton('ua-voice--fallback');
+            target.el.appendChild(btn);
+            log('button injected', target.mode);
+            return;
+        }
+
+        // Last-resort visual fallback for CUB skins:
+        // only shown while a full movie card is detected.
+        var floating = buildButton('ua-voice--floating');
+        document.body.appendChild(floating);
+        log('floating fallback injected');
     }
 
     function normalize(text) {
@@ -78,67 +200,72 @@
         var s = normalize([
             item && item.language,
             item && item.lang,
-            item && item.audio,
             item && item.voice,
             item && item.translation,
-            item && item.title,
+            item && item.audio,
+            item && item.label,
             item && item.name,
-            item && item.label
+            item && item.title
         ].filter(Boolean).join(' '));
 
-        return (
-            /\b(uk|ukr|ua)\b/i.test(s) ||
+        return /\b(uk|ukr|ua)\b/i.test(s) ||
             s.indexOf('україн') !== -1 ||
             s.indexOf('украин') !== -1 ||
             s.indexOf('укр') !== -1 ||
             s.indexOf('дубляж') !== -1 ||
             s.indexOf('багатоголос') !== -1 ||
             s.indexOf('двоголос') !== -1 ||
-            s.indexOf('одноголос') !== -1
-        );
+            s.indexOf('одноголос') !== -1;
     }
 
-    function movieIds(movie) {
+    function movieInfo(movie) {
         movie = movie || {};
-
         return {
             tmdb: movie.id || movie.tmdb_id || '',
             imdb: movie.imdb_id || '',
             kp: movie.kp_id || movie.kinopoisk_id || '',
+            type: movie.number_of_seasons || movie.first_air_date ? 'tv' : 'movie',
             title: movie.title || movie.name || '',
             original_title: movie.original_title || movie.original_name || '',
-            year: movie.release_date ? String(movie.release_date).slice(0, 4) :
-                  movie.first_air_date ? String(movie.first_air_date).slice(0, 4) : '',
-            type: movie.number_of_seasons || movie.first_air_date ? 'tv' : 'movie'
+            year: movie.release_date ? String(movie.release_date).slice(0,4) :
+                  movie.first_air_date ? String(movie.first_air_date).slice(0,4) : ''
         };
     }
 
-    function buildApiUrl(movie) {
+    function apiUrl(movie) {
         var base = String(get(STORE.api, '') || '').trim();
         if (!base) return '';
 
-        var ids = movieIds(movie);
+        var m = movieInfo(movie);
         var sep = base.indexOf('?') === -1 ? '?' : '&';
 
         return base + sep +
-            'tmdb=' + encodeURIComponent(ids.tmdb) +
-            '&imdb=' + encodeURIComponent(ids.imdb) +
-            '&kp=' + encodeURIComponent(ids.kp) +
-            '&type=' + encodeURIComponent(ids.type) +
-            '&title=' + encodeURIComponent(ids.title) +
-            '&original_title=' + encodeURIComponent(ids.original_title) +
-            '&year=' + encodeURIComponent(ids.year);
+            'tmdb=' + encodeURIComponent(m.tmdb) +
+            '&imdb=' + encodeURIComponent(m.imdb) +
+            '&kp=' + encodeURIComponent(m.kp) +
+            '&type=' + encodeURIComponent(m.type) +
+            '&title=' + encodeURIComponent(m.title) +
+            '&original_title=' + encodeURIComponent(m.original_title) +
+            '&year=' + encodeURIComponent(m.year);
     }
 
-    function requestJson(url, onSuccess, onError) {
+    function extract(data) {
+        if (!data) return [];
+        if (Array.isArray(data)) return data;
+        if (Array.isArray(data.results)) return data.results;
+        if (Array.isArray(data.items)) return data.items;
+        if (Array.isArray(data.sources)) return data.sources;
+        if (Array.isArray(data.voices)) return data.voices;
+        if (Array.isArray(data.data)) return data.data;
+        if (data.data && Array.isArray(data.data.results)) return data.data.results;
+        return [];
+    }
+
+    function request(url, ok, fail) {
         try {
-            if (Lampa.Network) {
-                var network = new Lampa.Reguest();
-                network.silent(url, function (data) {
-                    onSuccess(data);
-                }, function (err) {
-                    onError(err);
-                });
+            if (window.Lampa && Lampa.Reguest) {
+                var req = new Lampa.Reguest();
+                req.silent(url, ok, fail);
                 return;
             }
         } catch (e) {}
@@ -148,96 +275,48 @@
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.json();
             })
-            .then(onSuccess)
-            .catch(onError);
+            .then(ok)
+            .catch(fail);
     }
 
-    function extractItems(data) {
-        if (!data) return [];
-
-        var items = [];
-
-        if (Array.isArray(data)) items = data;
-        else if (Array.isArray(data.results)) items = data.results;
-        else if (Array.isArray(data.items)) items = data.items;
-        else if (Array.isArray(data.sources)) items = data.sources;
-        else if (Array.isArray(data.voices)) items = data.voices;
-        else if (data.data && Array.isArray(data.data)) items = data.data;
-        else if (data.data && Array.isArray(data.data.results)) items = data.data.results;
-
-        return items.filter(function (x) {
-            return x && (x.url || x.stream || x.file || x.link);
-        });
+    function sourceName(item, i) {
+        var a = item.voice || item.translation || item.audio || item.label || item.name || item.title;
+        var b = item.studio || item.provider || item.source || '';
+        var c = item.quality || '';
+        return [a || ('Українська озвучка ' + (i+1)), b, c].filter(Boolean).join(' · ');
     }
 
     function sourceUrl(item) {
         return item.url || item.stream || item.file || item.link || '';
     }
 
-    function sourceName(item, index) {
-        var voice = item.voice || item.translation || item.audio || item.label || item.name || item.title;
-        var studio = item.studio || item.provider || item.source || '';
-        var quality = item.quality || '';
-
-        var parts = [];
-        if (voice) parts.push(String(voice));
-        if (studio && normalize(studio) !== normalize(voice)) parts.push(String(studio));
-        if (quality) parts.push(String(quality));
-
-        return parts.length ? parts.join(' · ') : ('Українська озвучка ' + (index + 1));
-    }
-
-    function playSource(item, movie) {
+    function play(item, movie) {
         var url = sourceUrl(item);
-        if (!url) {
-            noty('Не вдалося отримати посилання на відео');
-            return;
-        }
-
-        set(STORE.last, sourceName(item, 0));
-
-        var title = (movie && (movie.title || movie.name)) || 'Відео';
+        if (!url) return noty('Немає посилання на відео');
 
         try {
             if (Lampa.Player && Lampa.Player.play) {
                 Lampa.Player.play({
                     url: url,
-                    title: title,
-                    movie: movie,
-                    quality: item.quality || '',
-                    subtitles: item.subtitles || []
+                    title: (movie && (movie.title || movie.name)) || 'Відео',
+                    movie: movie
                 });
-
-                if (Lampa.Player.playlist) {
-                    Lampa.Player.playlist([{
-                        url: url,
-                        title: title,
-                        movie: movie
-                    }]);
-                }
-
                 return;
             }
         } catch (e) {
-            log('Player.play error', e);
+            log('play error', e);
         }
 
-        noty('Плеєр Lampa не прийняв це джерело');
+        noty('Не вдалося запустити відео');
     }
 
     function showSources(items, movie) {
         var ua = items.filter(isUa);
-
-        if (!ua.length) {
-            noty('🇺🇦 Українських озвучок для цього відео не знайдено');
-            return;
-        }
+        if (!ua.length) return noty('🇺🇦 Українських озвучок не знайдено');
 
         var list = ua.map(function (item, i) {
             return {
                 title: '🇺🇦 ' + sourceName(item, i),
-                subtitle: [item.language || item.lang || '', item.quality || '']
-                    .filter(Boolean).join(' · '),
                 source: item
             };
         });
@@ -247,106 +326,30 @@
                 Lampa.Select.show({
                     title: '🇺🇦 Українська озвучка',
                     items: list,
-                    onSelect: function (selected) {
-                        playSource(selected.source, movie);
-                    },
-                    onBack: function () {
-                        try { Lampa.Controller.toggle('content'); } catch (e) {}
-                    }
+                    onSelect: function (x) { play(x.source, movie); }
                 });
                 return;
             }
-        } catch (e) {
-            log('Select error', e);
-        }
+        } catch (e) {}
 
-        playSource(ua[0], movie);
+        play(ua[0], movie);
     }
 
-    function loadSources(movie) {
-        if (get(STORE.enabled, true) === false) return;
+    function openUa(movie) {
+        var url = apiUrl(movie);
 
-        var api = buildApiUrl(movie);
-
-        if (!api) {
-            noty('Вкажіть API джерел у Налаштування → UA Voice 🇺🇦');
+        if (!url) {
+            noty('Кнопка працює. Тепер треба вказати API у Налаштування → UA Voice 🇺🇦');
             return;
         }
 
         noty('Пошук українських озвучок…');
-
-        requestJson(api, function (data) {
-            var items = extractItems(data);
-            showSources(items, movie);
-        }, function (err) {
-            log('API error', err);
-            noty('Не вдалося отримати список озвучок');
+        request(url, function (data) {
+            showSources(extract(data), movie);
+        }, function (e) {
+            log('API', e);
+            noty('Помилка отримання озвучок');
         });
-    }
-
-    function buttonHtml() {
-        return $(
-            '<div class="full-start__button selector ua-voice--button">' +
-                '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">' +
-                    '<path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.06A4.5 4.5 0 0 0 16.5 12zm0-8.66v2.07A8 8 0 0 1 20 12a8 8 0 0 1-3.5 6.59v2.07A10 10 0 0 0 22 12a10 10 0 0 0-5.5-8.66z"/>' +
-                '</svg>' +
-                '<span>🇺🇦 Українська</span>' +
-            '</div>'
-        );
-    }
-
-    function addButton(movie, root) {
-        try {
-            if (!root || !root.length) return;
-            if (root.find('.ua-voice--button').length) return;
-
-            var buttons = root.find('.full-start__buttons');
-            if (!buttons.length) return;
-
-            var btn = buttonHtml();
-
-            btn.on('hover:enter click', function () {
-                loadSources(movie);
-            });
-
-            buttons.append(btn);
-        } catch (e) {
-            log('button error', e);
-        }
-    }
-
-    function observeFull() {
-        try {
-            Lampa.Listener.follow('full', function (e) {
-                if (e.type !== 'complite') return;
-
-                var movie = e.data && e.data.movie ? e.data.movie : e.data;
-                var root = e.object && e.object.activity && e.object.activity.render
-                    ? e.object.activity.render()
-                    : $('.full-start');
-
-                setTimeout(function () {
-                    addButton(movie, root);
-                }, 50);
-            });
-        } catch (e) {
-            log('full listener error', e);
-        }
-
-        try {
-            Lampa.Listener.follow('activity', function (e) {
-                if (e.type !== 'start') return;
-                if (e.component !== 'full' && e.component !== 'showy') return;
-
-                setTimeout(function () {
-                    var movie = e.object && (e.object.card || e.object.movie);
-                    var root = e.object && e.object.activity && e.object.activity.render
-                        ? e.object.activity.render()
-                        : $('.full-start');
-                    addButton(movie, root);
-                }, 250);
-            });
-        } catch (e) {}
     }
 
     function addSettings() {
@@ -357,82 +360,100 @@
                 Lampa.SettingsApi.addComponent({
                     component: PLUGIN,
                     name: 'UA Voice 🇺🇦',
-                    icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.06A4.5 4.5 0 0 0 16.5 12z"/></svg>'
+                    icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 10v4h4l5 5V5L7 10H3z"/></svg>'
                 });
             } catch (e) {}
 
-            Lampa.SettingsApi.addParam({
-                component: PLUGIN,
-                param: {
-                    name: STORE.enabled,
-                    type: 'trigger',
-                    default: true
-                },
-                field: {
-                    name: 'Увімкнути UA Voice',
-                    description: 'Показувати кнопку українських озвучок у картці фільму'
-                }
-            });
+            try {
+                Lampa.SettingsApi.addParam({
+                    component: PLUGIN,
+                    param: { name: STORE.enabled, type: 'trigger', default: true },
+                    field: {
+                        name: 'Увімкнути UA Voice',
+                        description: 'Показувати кнопку української озвучки'
+                    }
+                });
+            } catch (e) {}
 
-            Lampa.SettingsApi.addParam({
-                component: PLUGIN,
-                param: {
-                    name: STORE.api,
-                    type: 'input',
-                    default: ''
-                },
-                field: {
-                    name: 'API джерел',
-                    description: 'HTTPS-адреса твого легального або власного API українських відеоджерел'
-                }
+            try {
+                Lampa.SettingsApi.addParam({
+                    component: PLUGIN,
+                    param: { name: STORE.api, type: 'input', default: '' },
+                    field: {
+                        name: 'API джерел',
+                        description: 'HTTPS адреса легального або власного API'
+                    }
+                });
+            } catch (e) {}
+        } catch (e) {
+            log('settings', e);
+        }
+    }
+
+    function hookLampa() {
+        try {
+            if (Lampa.Listener && Lampa.Listener.follow) {
+                Lampa.Listener.follow('full', function (e) {
+                    try {
+                        if (e && e.data) currentMovie = e.data.movie || e.data.card || e.data;
+                        else if (e && e.object) currentMovie = e.object.movie || e.object.card || currentMovie;
+                    } catch (_) {}
+                    setTimeout(inject, 60);
+                    setTimeout(inject, 300);
+                    setTimeout(inject, 900);
+                });
+
+                Lampa.Listener.follow('activity', function (e) {
+                    try {
+                        if (e && e.object) {
+                            currentMovie = e.object.movie || e.object.card || currentMovie;
+                        }
+                    } catch (_) {}
+                    setTimeout(inject, 150);
+                });
+            }
+        } catch (e) {
+            log('listener', e);
+        }
+    }
+
+    function startObserver() {
+        try {
+            observer = new MutationObserver(function () {
+                clearTimeout(injectTimer);
+                injectTimer = setTimeout(inject, 80);
+            });
+            observer.observe(document.documentElement || document.body, {
+                childList: true,
+                subtree: true
             });
         } catch (e) {
-            log('settings error', e);
+            log('observer', e);
         }
+
+        setInterval(inject, 1500);
     }
 
     function init() {
         registerManifest();
+        addStyle();
         addSettings();
-        observeFull();
-
-        log('v' + VERSION + ' loaded');
+        hookLampa();
+        startObserver();
+        setTimeout(inject, 500);
+        log('v' + VERSION + ' CUB fix loaded');
     }
 
     function wait() {
-        if (window.appready && window.Lampa) {
-            init();
-            return;
-        }
-
-        if (window.Lampa && Lampa.Listener) {
-            var done = false;
-
-            Lampa.Listener.follow('app', function (e) {
-                if (!done && e.type === 'ready') {
-                    done = true;
-                    init();
-                }
-            });
-
-            setTimeout(function () {
-                if (!done && window.Lampa && Lampa.SettingsApi) {
-                    done = true;
-                    init();
-                }
-            }, 1500);
-
-            return;
-        }
-
-        setTimeout(wait, 300);
+        if (window.Lampa && Lampa.SettingsApi) init();
+        else setTimeout(wait, 300);
     }
 
     wait();
 
     window.LampaUAVoice = {
         version: VERSION,
-        open: loadSources,
-        isUa: isUa
+        inject: inject,
+        open: openUa
     };
 })();
